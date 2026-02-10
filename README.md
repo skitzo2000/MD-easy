@@ -8,6 +8,7 @@ A small Markdown doc server with a **refresh hook** for AI-updated documentation
 - **Refresh hook**: `POST /refresh` — call when docs change (e.g. from an AI agent) so the UI refetches
 - **State preservation**: Current file and scroll position are kept across refreshes; the user is only moved if the current file is removed
 - **SSE**: The frontend listens to `/api/events` so it refreshes as soon as the hook is called (no polling)
+- **Working links**: Relative `.md` links in documents are rewritten to open in the doc viewer (default base URL: `http://localhost:PORT`)
 
 ## Quick start
 
@@ -37,12 +38,18 @@ docker run -p 8765:8765 -v /path/to/your/docs:/docs ghcr.io/YOUR_ORG/md-easy:lat
 
 When your agent (or any process) updates Markdown files, call the refresh hook so the browser view updates without a full reload, and the user’s location is preserved (or they’re sent home only if the current doc was removed).
 
+**Security:** If you set the `REFRESH_API_KEY` environment variable, `POST /refresh` requires authentication. Provide the key via **`X-API-Key: <your-key>`** or **`Authorization: Bearer <your-key>`**. If `REFRESH_API_KEY` is not set, the refresh endpoint remains open (fine for local use; set the key for exposed instances).
+
 ```bash
-# Notify the server that docs changed
+# Notify the server that docs changed (no key required if REFRESH_API_KEY is unset)
 curl -X POST http://localhost:8765/refresh
 
+# With API key (when REFRESH_API_KEY is set)
+curl -X POST http://localhost:8765/refresh -H "X-API-Key: your-secret-key"
+curl -X POST http://localhost:8765/refresh -H "Authorization: Bearer your-secret-key"
+
 # Optional body (JSON)
-curl -X POST http://localhost:8765/refresh -H "Content-Type: application/json" -d '{"reason": "Updated CLAUDE.md"}'
+curl -X POST http://localhost:8765/refresh -H "Content-Type: application/json" -H "X-API-Key: your-secret-key" -d '{"reason": "Updated CLAUDE.md"}'
 ```
 
 **Behavior:**
@@ -96,6 +103,9 @@ docker run -p 8765:8765 -e THEME=solarized-dark -v /path/to/docs:/docs md-easy
 - **`DOC_ROOT`** — Directory to scan and serve `.md` from (default: current directory).
 - **`PORT`** — Server port (default: `8765`).
 - **`THEME`** — `default` \| `homebrew` \| `solarized-light` \| `solarized-dark` (default: `default`).
+- **`HOST`** — Bind address. If unset, server binds to `127.0.0.1` (localhost only). If set (e.g. `0.0.0.0` for LAN), server binds to that address and **requires** `REFRESH_API_KEY` (startup fails otherwise).
+- **`BASE_URL`** — Base URL for doc viewer links (default: `http://localhost:PORT`). Returned in `GET /api/config` as `baseUrl`; used when rewriting `.md` links in rendered docs.
+- **`REFRESH_API_KEY`** — Optional when binding to localhost. If set (or when `HOST` is set), `POST /refresh` requires this value in the `X-API-Key` or `Authorization: Bearer` header.
 
 ## State preservation
 

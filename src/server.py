@@ -6,13 +6,30 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import secrets
+import sys
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import markdown
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# Port and bind host (HOST set => bind to that address and require REFRESH_API_KEY)
+PORT = int(os.environ.get("PORT", "8765"))
+HOST = (os.environ.get("HOST") or "").strip()
+REFRESH_API_KEY = (os.environ.get("REFRESH_API_KEY") or "").strip()
+
+# When HOST is set (non-local binding), API key is required for refresh
+if HOST and not REFRESH_API_KEY:
+    print("Error: REFRESH_API_KEY must be set when HOST is set (non-local binding).", file=sys.stderr)
+    sys.exit(1)
+
+# Base URL for doc viewer links (default http://localhost:PORT); no trailing slash
+BASE_URL = (os.environ.get("BASE_URL") or f"http://localhost:{PORT}").strip().rstrip("/")
 
 # Where to serve .md files from (override with DOC_ROOT env)
 DOC_ROOT = Path(os.environ.get("DOC_ROOT", ".")).resolve()
@@ -57,10 +74,42 @@ def _under_root(p: Path) -> bool:
     return p == DOC_ROOT or DOC_ROOT in p.parents
 
 
+def _rewrite_md_links_in_html(html: str, current_doc_path: str, base_url: str) -> str:
+    """Rewrite relative/internal .md links to open in the doc viewer (baseUrl/#/path)."""
+    if not current_doc_path or not base_url:
+        return html
+    # Directory of current doc for resolving relative links (with trailing / for urljoin)
+    dir_part = current_doc_path.rsplit("/", 1)[0] + "/" if "/" in current_doc_path else ""
+
+    def replace_href(m: re.Match[str]) -> str:
+        href = m.group(1)
+        if not href or href.startswith("#") or href.startswith("mailto:") or href.startswith("http://") or href.startswith("https://"):
+            return m.group(0)
+        parsed = urlparse(href)
+        if parsed.scheme or parsed.netloc:
+            return m.group(0)
+        path = (parsed.path or href).lstrip("/")
+        # Root-relative (e.g. /docs/foo.md) => path under doc root; else resolve relative to current doc dir
+        if (parsed.path or href).startswith("/"):
+            resolved = path
+        else:
+            resolved = urljoin(dir_part, path)
+        resolved = resolved.rstrip("/")
+        if not resolved.lower().endswith(".md"):
+            return m.group(0)
+        # Normalize: remove any query/fragment for the route; keep fragment for in-page anchor if needed
+        new_href = f"{base_url}/#/{resolved}"
+        if parsed.fragment:
+            new_href += "#" + parsed.fragment
+        return f'href="{new_href}"'
+
+    return re.sub(r'href="([^"]*)"', replace_href, html)
+
+
 @app.get("/api/config")
 def get_config():
-    """Theme and client config; theme is from env THEME (or default)."""
-    return {"theme": THEME}
+    """Theme and client config; theme from env THEME, baseUrl for doc viewer links (default localhost)."""
+    return {"theme": THEME, "baseUrl": BASE_URL}
 
 
 @app.get("/api/files")
@@ -81,6 +130,7 @@ def get_doc(path: str = ""):
         raise HTTPException(status_code=403, detail="forbidden")
     raw = full.read_text(encoding="utf-8", errors="replace")
     html = markdown.markdown(raw, extensions=["extra", "codehilite", "toc"])
+    html = _rewrite_md_links_in_html(html, path, BASE_URL)
     return {"path": path, "html": html, "raw": raw}
 
 
@@ -94,7 +144,21 @@ class RefreshBody(BaseModel):
     reason: str | None = None
 
 
-@app.post("/refresh")
+def _verify_refresh_api_key(
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    authorization: str | None = Header(None),
+) -> None:
+    """Require valid API key for /refresh when REFRESH_API_KEY is set. Accepts X-API-Key or Authorization: Bearer."""
+    if not REFRESH_API_KEY:
+        return
+    raw = (x_api_key or "").strip()
+    if not raw and authorization and authorization.strip().lower().startswith("bearer "):
+        raw = authorization.strip()[7:].strip()
+    if not raw or not secrets.compare_digest(raw, REFRESH_API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid or missing refresh API key")
+
+
+@app.post("/refresh", dependencies=[Depends(_verify_refresh_api_key)])
 def refresh_hook(body: RefreshBody | None = None):
     """
     Refresh hook: call this when docs are updated (e.g. from an AI agent).
@@ -154,4 +218,5 @@ def raw_md(path: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8765")))
+    bind_host = HOST if HOST else "127.0.0.1"
+    uvicorn.run(app, host=bind_host, port=PORT)
