@@ -5,6 +5,7 @@ Serves .md files; agents call POST /refresh to signal updates; clients preserve 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -46,6 +47,7 @@ app = FastAPI(title="MD-Easy", description="MD doc server with refresh hook for 
 # SSE: when refresh is triggered, notify connected clients
 _refresh_event = asyncio.Event()
 _refresh_version = 0
+_pending_navigate: dict | None = None  # {"path": str, "fragment": str | None, "highlight": bool}
 
 
 def _collect_md_files(base: Path, prefix: str = "") -> list[str]:
@@ -142,6 +144,9 @@ def get_version():
 
 class RefreshBody(BaseModel):
     reason: str | None = None
+    navigate_path: str | None = None
+    navigate_fragment: str | None = None
+    highlight: bool = True
 
 
 def _verify_refresh_api_key(
@@ -164,9 +169,19 @@ def refresh_hook(body: RefreshBody | None = None):
     Refresh hook: call this when docs are updated (e.g. from an AI agent).
     Bumps version and wakes SSE listeners so the UI refetches while preserving
     the user's current location unless that file was removed.
+    Optional: set navigate_path (and optionally navigate_fragment, highlight) to
+    tell the viewer to open that doc/section and briefly highlight it.
     """
-    global _refresh_version
+    global _refresh_version, _pending_navigate
     _refresh_version += 1
+    if body and body.navigate_path and body.navigate_path.strip():
+        _pending_navigate = {
+            "path": body.navigate_path.strip(),
+            "fragment": (body.navigate_fragment or "").strip() or None,
+            "highlight": getattr(body, "highlight", True),
+        }
+    else:
+        _pending_navigate = None
     _refresh_event.set()
     _refresh_event.clear()
     return {"ok": True, "version": _refresh_version, "reason": getattr(body, "reason", None) or ""}
@@ -178,6 +193,7 @@ async def sse_events():
     from fastapi.responses import StreamingResponse
 
     async def stream():
+        global _pending_navigate
         last = _refresh_version
         while True:
             try:
@@ -187,7 +203,11 @@ async def sse_events():
                 continue
             if _refresh_version != last:
                 last = _refresh_version
-                yield f"data: {{\"version\": {last}}}\n\n"
+                payload = {"version": last}
+                if _pending_navigate is not None:
+                    payload["navigate"] = _pending_navigate
+                    _pending_navigate = None
+                yield f"data: {json.dumps(payload)}\n\n"
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",

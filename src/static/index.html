@@ -99,6 +99,16 @@
       font-size: 0.75rem;
       color: var(--muted);
     }
+    .main .doc [id] { scroll-margin-top: 0.5rem; }
+    .main .doc .mdeasy-highlight {
+      background: rgba(167, 139, 250, 0.2);
+      border-radius: 4px;
+      animation: mdeasy-highlight-fade 2.5s ease-out forwards;
+    }
+    @keyframes mdeasy-highlight-fade {
+      from { background: rgba(167, 139, 250, 0.35); }
+      to { background: transparent; }
+    }
   </style>
   <link id="theme-css" rel="stylesheet" href="/themes/default.css" />
 </head>
@@ -123,12 +133,26 @@
 
     function getPathFromHash() {
       const h = window.location.hash.slice(1);
-      return h.startsWith("/") ? h.slice(1) : h;
+      const value = h.startsWith("/") ? h.slice(1) : h;
+      const sharp = value.indexOf("#");
+      const pathPart = sharp >= 0 ? value.slice(0, sharp) : value;
+      return pathPart;
     }
 
-    function setHash(path) {
-      const v = path ? "/" + path : "";
-      if (getPathFromHash() !== path) window.location.hash = v;
+    function getFragmentFromHash() {
+      const h = window.location.hash.slice(1);
+      const value = h.startsWith("/") ? h.slice(1) : h;
+      const sharp = value.indexOf("#");
+      if (sharp < 0) return null;
+      const fragment = value.slice(sharp + 1);
+      return fragment ? decodeURIComponent(fragment) : null;
+    }
+
+    function setHash(path, fragment) {
+      const v = path ? "/" + path + (fragment ? "#" + encodeURIComponent(fragment) : "") : "";
+      const current = getPathFromHash();
+      const currentFrag = getFragmentFromHash();
+      if (current !== path || (fragment || null) !== (currentFrag || null)) window.location.hash = v;
     }
 
     function scrollKey(path) { return STORAGE_PREFIX + path; }
@@ -207,7 +231,22 @@
       CONTENT.replaceChildren(wrap);
     }
 
-    async function loadDoc(path) {
+    let highlightTimer;
+    function scrollToFragment(fragment, doHighlight) {
+      if (!fragment || !CONTENT) return;
+      const el = CONTENT.querySelector(".doc [id='" + CSS.escape(fragment) + "']");
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (doHighlight) {
+        clearTimeout(highlightTimer);
+        el.classList.add("mdeasy-highlight");
+        highlightTimer = setTimeout(function () {
+          el.classList.remove("mdeasy-highlight");
+        }, 2500);
+      }
+    }
+
+    async function loadDoc(path, fragment) {
       if (!path) {
         showWelcome();
         return;
@@ -228,7 +267,11 @@
         setDocHtml(data.html);
         renderFileList(path);
         currentPath = path;
-        restoreScroll(path);
+        if (fragment) {
+          requestAnimationFrame(function () { scrollToFragment(fragment, true); });
+        } else {
+          restoreScroll(path);
+        }
       } catch (e) {
         const w = document.createElement("div");
         w.className = "welcome";
@@ -247,6 +290,7 @@
 
     async function onRefresh() {
       const path = getPathFromHash();
+      const fragment = getFragmentFromHash();
       const hadPath = path && path.length > 0;
       await fetchFiles();
       renderFileList(path);
@@ -254,8 +298,8 @@
       if (hadPath) {
         const stillExists = fileList.includes(path);
         if (stillExists) {
-          await loadDoc(path);
-          restoreScroll(path);
+          await loadDoc(path, fragment);
+          if (!fragment) restoreScroll(path);
           showRefreshStatus("Docs updated; view refreshed.");
         } else {
           setHash("");
@@ -269,20 +313,53 @@
       if (currentPath) scheduleScrollSave(currentPath);
     });
 
-    window.addEventListener("hashchange", () => {
+    window.addEventListener("hashchange", function () {
       const path = getPathFromHash();
-      loadDoc(path);
+      const fragment = getFragmentFromHash();
+      if (!path) {
+        loadDoc("");
+        return;
+      }
+      if (path === currentPath && fragment !== null) {
+        scrollToFragment(fragment, true);
+        return;
+      }
+      loadDoc(path, fragment);
+    });
+
+    CONTENT.addEventListener("click", function (e) {
+      const a = e.target.closest(".doc a[href^='#']");
+      if (!a || !a.getAttribute("href")) return;
+      const href = a.getAttribute("href");
+      if (href.startsWith("#/")) return;
+      const frag = href.slice(1);
+      e.preventDefault();
+      setHash(currentPath, frag);
+      scrollToFragment(frag, true);
     });
 
     (function initSSE() {
       const es = new EventSource("/api/events");
-      es.onmessage = (ev) => {
+      es.onmessage = function (ev) {
         try {
           const d = JSON.parse(ev.data);
-          if (d.version != null) onRefresh();
+          if (d.version == null) return;
+          if (d.navigate) {
+            setHash(d.navigate.path, d.navigate.fragment || null);
+            (async function () {
+              await fetchFiles();
+              renderFileList(d.navigate.path);
+              if (fileList.includes(d.navigate.path)) {
+                await loadDoc(d.navigate.path, d.navigate.highlight !== false ? (d.navigate.fragment || null) : null);
+              }
+              showRefreshStatus("Docs updated; view refreshed.");
+            })();
+          } else {
+            onRefresh();
+          }
         } catch (_) {}
-        };
-      es.onerror = () => { es.close(); setTimeout(initSSE, 5000); };
+      };
+      es.onerror = function () { es.close(); setTimeout(initSSE, 5000); };
     })();
 
     function applyTheme(theme) {
@@ -307,8 +384,9 @@
       }
       await fetchFiles();
       const path = getPathFromHash();
+      const fragment = getFragmentFromHash();
       if (path && fileList.includes(path)) {
-        await loadDoc(path);
+        await loadDoc(path, fragment);
       } else {
         if (path) setHash("");
         showWelcome();

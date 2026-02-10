@@ -55,7 +55,13 @@ curl -X POST http://localhost:8765/refresh -H "X-API-Key: $REFRESH_API_KEY"
 # Optional JSON body
 curl -X POST http://localhost:8765/refresh -H "X-API-Key: $REFRESH_API_KEY" \
   -H "Content-Type: application/json" -d '{"reason": "Updated CLAUDE.md"}'
+
+# Refresh and point the viewer at a specific doc/section (navigate + highlight)
+curl -X POST http://localhost:8765/refresh -H "X-API-Key: $REFRESH_API_KEY" \
+  -H "Content-Type: application/json" -d '{"reason": "Updated plan", "navigate_path": "docs/plan.md", "navigate_fragment": "implementation", "highlight": true}'
 ```
+
+Optional body fields: **`reason`** (string); **`navigate_path`** (doc path to open after refresh); **`navigate_fragment`** (heading ID to scroll to and highlight); **`highlight`** (boolean, default true). When `navigate_path` is set, the viewer opens that doc and, if `navigate_fragment` is set, scrolls to that section and briefly highlights it. Use this after updating a doc so the user is taken to the relevant section.
 
 Use the same host/port the user runs the server on (default `http://localhost:8765`). Without a valid key when `REFRESH_API_KEY` is set, the server returns 401.
 
@@ -69,11 +75,20 @@ When you write markdown that links to other docs, use **relative paths** so the 
 
 The server rewrites such links to `{baseUrl}/#/{path}` so they open in the same viewer. By default `baseUrl` is `http://localhost:{PORT}`; if the user runs with a different host (e.g. `HOST=0.0.0.0` and `BASE_URL=http://192.168.1.5:8765`), get the base from `GET /api/config` (`baseUrl`) and use it when you need to output a shareable doc URL. Do not hardcode localhost in shareable links when the server is not on localhost.
 
+## Section links (in-doc and cross-doc)
+
+Headings get slugified IDs (e.g. `## API Reference` → `#api-reference`). Use them so the viewer scrolls to a section and briefly highlights it:
+
+- **In-doc**: `[Section name](#section-id)` — same file (e.g. `[API Reference](#api-reference)`).
+- **Cross-doc**: `[Section](path/to/doc.md#section-id)` — opens that doc and scrolls to the section.
+
+Use lowercase, hyphenated IDs. Shareable URLs: `{baseUrl}/#/path/to/doc.md#section-id`.
+
 ## Workflow for AI agents
 
 1. User has MD-Easy running (or you help them start it with the commands above).
-2. You edit or create `.md` files under the server’s `DOC_ROOT`. Use relative `.md` links so they work in the viewer.
-3. After saving changes, call `POST /refresh` (with `X-API-Key` or `Authorization: Bearer` if the server uses `REFRESH_API_KEY`).
-4. The browser view updates; the user’s current file and scroll position are preserved unless that file was removed.
+2. You edit or create `.md` files under the server’s `DOC_ROOT`. Use relative `.md` links and section fragments (e.g. `doc.md#section-id`) so they work in the viewer.
+3. After saving changes, call `POST /refresh` (with `X-API-Key` or `Authorization: Bearer` if the server uses `REFRESH_API_KEY`). Optionally send **`navigate_path`** and **`navigate_fragment`** so the viewer opens that doc and scrolls to that section with a brief highlight (e.g. after updating a plan, point the user at the “Implementation” section).
+4. The browser view updates; the user’s current file and scroll position are preserved unless that file was removed or you set `navigate_path`.
 
 For full API, env vars, and Docker details, see [README.md](README.md).

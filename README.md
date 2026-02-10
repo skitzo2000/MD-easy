@@ -9,6 +9,8 @@ A small Markdown doc server with a **refresh hook** for AI-updated documentation
 - **State preservation**: Current file and scroll position are kept across refreshes; the user is only moved if the current file is removed
 - **SSE**: The frontend listens to `/api/events` so it refreshes as soon as the hook is called (no polling)
 - **Working links**: Relative `.md` links in documents are rewritten to open in the doc viewer (default base URL: `http://localhost:PORT`)
+- **Section links**: In-doc and cross-doc links with fragments (e.g. `[Section](other.md#section-id)`) open the doc and scroll to the heading; headings get slugified IDs from the TOC extension
+- **Navigate + highlight**: The refresh hook can optionally tell the viewer to open a specific path and section and briefly highlight it (for AI “look here” flows)
 
 ## Quick start
 
@@ -50,11 +52,22 @@ curl -X POST http://localhost:8765/refresh -H "Authorization: Bearer your-secret
 
 # Optional body (JSON)
 curl -X POST http://localhost:8765/refresh -H "Content-Type: application/json" -H "X-API-Key: your-secret-key" -d '{"reason": "Updated CLAUDE.md"}'
+
+# Refresh and tell the viewer to open a doc/section and highlight it (for AI agents)
+curl -X POST http://localhost:8765/refresh -H "Content-Type: application/json" -d '{"reason": "Updated plan", "navigate_path": "docs/plan.md", "navigate_fragment": "implementation", "highlight": true}'
 ```
+
+**Body fields:**
+
+- **`reason`** (optional): Human-readable reason for the refresh.
+- **`navigate_path`** (optional): After refreshing, open this doc path (e.g. `docs/plan.md`). Requires a path under `DOC_ROOT`.
+- **`navigate_fragment`** (optional): Scroll to this heading ID (slug) and briefly highlight it (e.g. `implementation` for `## Implementation`).
+- **`highlight`** (optional, default `true`): When `navigate_path` is set, whether to briefly highlight the section (if `navigate_fragment` is also set).
 
 **Behavior:**
 
-- **Current file still exists**: Content is refetched, scroll position restored; user stays on the same doc.
+- **Current file still exists**: Content is refetched, scroll position restored; user stays on the same doc (unless `navigate_path` is set).
+- **If `navigate_path` is set**: Viewer opens that doc (and scrolls to `navigate_fragment` if provided), with a short highlight. Use this so the AI can point the user at a specific section after updating docs.
 - **Current file was removed**: User is taken back to the welcome/index; sidebar is updated.
 
 ## API
@@ -107,8 +120,17 @@ docker run -p 8765:8765 -e THEME=solarized-dark -v /path/to/docs:/docs md-easy
 - **`BASE_URL`** — Base URL for doc viewer links (default: `http://localhost:PORT`). Returned in `GET /api/config` as `baseUrl`; used when rewriting `.md` links in rendered docs.
 - **`REFRESH_API_KEY`** — Optional when binding to localhost. If set (or when `HOST` is set), `POST /refresh` requires this value in the `X-API-Key` or `Authorization: Bearer` header.
 
+## Section links (for AI and docs)
+
+Headings get slugified `id` attributes (e.g. `## API Reference` → `id="api-reference"`). Use them for in-doc and cross-doc links:
+
+- **In-doc**: `[Section name](#section-id)` — same file, scrolls to the heading and briefly highlights it. Use lowercase, hyphenated IDs (e.g. `#api-reference`).
+- **Cross-doc**: `[Section](path/to/doc.md#section-id)` — opens the doc and scrolls to that section. Relative paths are rewritten to the viewer.
+
+Shareable URLs: `{baseUrl}/#/path/to/doc.md#section-id` opens the doc and scrolls to the section.
+
 ## State preservation
 
-- **URL**: Current document is encoded in the hash, e.g. `#/docs/plan.md`.
-- **Scroll**: Scroll position per document is stored in `sessionStorage` and restored after refresh.
+- **URL**: Current document (and optional section) is encoded in the hash, e.g. `#/docs/plan.md` or `#/docs/plan.md#implementation`.
+- **Scroll**: Scroll position per document is stored in `sessionStorage` and restored after refresh (section links override and scroll to the fragment).
 - **On refresh**: File list and current doc are refetched; if the current path is still in the list, the doc is reloaded and scroll restored; otherwise the user is sent to the index.
