@@ -1,0 +1,10 @@
+/* MD-Easy Homebrew theme — CLI-style green on black */
+:root {
+  --bg: #000000;
+  --surface: #0d1117;
+  --border: #21262d;
+  --text: #00ff00;
+  --muted: #7ee787;
+  --accent: #58a6ff;
+  --accent-dim: #388bfd;
+}
